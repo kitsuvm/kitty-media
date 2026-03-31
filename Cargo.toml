@@ -10,8 +10,10 @@ edition = "2024"
 tracing-test = "0.2.6"
 
 [dependencies]
-actix-web = { version = "4.13.0", default-features = false, features = ["rustls", "macros"] }
+actix-web = { version = "4.13.0", default-features = false, features = ["rustls-0_23", "macros"] }
 ffmpeg-next = "8.1.0"
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "parking_lot", "io-uring"] }
+rustls = "0.23.37"
+rustls-pki-types = { version = "1.14.0", features = ["std"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "parking_lot"] }
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "smallvec", "parking_lot", "time"] }
