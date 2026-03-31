@@ -71,6 +71,10 @@ pub struct BackgroundDownloader {
     pub buffer_size: usize,
     /// Number of packets to buffer in memory while streaming.
     pub packets_on_fly: usize,
+    /// Path to the ffmpeg executable, allowing for custom paths or versions.
+    pub ffmpeg_path: String,
+    /// Path to the yt-dlp executable, allowing for custom paths or versions.
+    pub yt_dlp_path: String,
 }
 
 impl BackgroundDownloader {
@@ -266,7 +270,7 @@ async fn youtube(
     task::spawn_blocking(move || {
         trace!("Cache miss for video ID: {id}.");
 
-        let mut yt_dlp_command = Command::new("yt-dlp");
+        let mut yt_dlp_command = Command::new(&app_state.downloader.yt_dlp_path);
 
         yt_dlp_command
             .arg("-f")
@@ -321,7 +325,7 @@ async fn youtube(
             return;
         }
 
-        let Ok(mut ffmpeg) = Command::new("ffmpeg")
+        let Ok(mut ffmpeg) = Command::new(&app_state.downloader.ffmpeg_path)
             .stderr(Stdio::null())
             .arg("-i")
             .arg(video_url)
@@ -407,7 +411,7 @@ async fn youtube(
 
                         drop(file_writer);
 
-                        match Command::new("ffmpeg")
+                        match Command::new(&app_state.downloader.ffmpeg_path)
                             .arg("-i")
                             .arg(&temp_cache_path)
                             .arg("-c:v")
@@ -454,12 +458,13 @@ async fn youtube(
                     }
 
                     if let Some((file_writer, _, _)) = cache.as_mut()
-                        && let Err(e) = file_writer.write_all(&buffer[..n]) {
-                            warn!("Failed to write to cache file ({id}): {e}");
+                        && let Err(e) = file_writer.write_all(&buffer[..n])
+                    {
+                        warn!("Failed to write to cache file ({id}): {e}");
 
-                            cache_error = true;
-                            cache = None;
-                        }
+                        cache_error = true;
+                        cache = None;
+                    }
                 }
                 Err(e) => {
                     error!("Error reading from ffmpeg stdout: {e}");
@@ -565,10 +570,11 @@ async fn main() {
     let cache_dir = env::var("KITTY_MEDIA_CACHE_DIR").ok().map(PathBuf::from);
 
     if let Some(cache_dir) = &cache_dir
-        && let Err(e) = fs::create_dir_all(cache_dir) {
-            error!("Failed to create cache directory: {e}");
-            exit(1);
-        }
+        && let Err(e) = fs::create_dir_all(cache_dir)
+    {
+        error!("Failed to create cache directory: {e}");
+        exit(1);
+    }
 
     let cookies_path = env::var("KITTY_MEDIA_COOKIES_PATH").ok().map(PathBuf::from);
 
@@ -588,6 +594,10 @@ async fn main() {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_PACKETS_ON_FLY);
+
+    let ffmpeg_path = env::var("KITTY_MEDIA_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
+
+    let yt_dlp_path = env::var("KITTY_MEDIA_YTDLP_PATH").unwrap_or_else(|_| "yt-dlp".to_string());
 
     let ram_usage_per_download = buffer_size * packets_on_fly;
     let max_ram_usage = ram_usage_per_download * max_concurrent_downloads;
@@ -628,6 +638,8 @@ async fn main() {
             max_concurrent_downloads,
             buffer_size,
             packets_on_fly,
+            ffmpeg_path,
+            yt_dlp_path,
         }),
     });
 

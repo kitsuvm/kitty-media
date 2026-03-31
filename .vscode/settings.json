@@ -16,6 +16,7 @@
     "trueish",
     "uring",
     "vcodec",
-    "youtube"
+    "youtube",
+    "YTDLP"
   ]
 }
