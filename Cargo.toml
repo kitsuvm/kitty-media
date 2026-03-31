@@ -1,8 +1,17 @@
 [package]
 name = "kitty-media"
 description = "A tool created to transcode and cache YouTube videos."
+license = "AGPL-3.0-or-later"
+readme = "README.md"
 version = "0.1.0"
 edition = "2024"
 
+[dev-dependencies]
+tracing-test = "0.2.6"
+
 [dependencies]
-actix = "0.13.5"
+actix-web = { version = "4.13.0", default-features = false, features = ["rustls", "macros"] }
+ffmpeg-next = "8.1.0"
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "parking_lot", "io-uring"] }
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "smallvec", "parking_lot", "time"] }
