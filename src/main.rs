@@ -8,103 +8,492 @@
 
 use std::{
     env,
+    fs::{self, File},
+    io::{BufWriter, Read, Write},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    process::{Stdio, exit},
+    os::windows::fs::MetadataExt,
+    path::PathBuf,
+    process::{Command, Stdio, exit},
     str::FromStr,
+    sync::Arc,
+    thread,
+    time::Duration,
 };
 
-use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
+use actix_files::NamedFile;
+use actix_web::{
+    App, HttpRequest, HttpResponse, HttpServer, Responder, ResponseError, get, head,
+    http::{
+        StatusCode,
+        header::{
+            self, CacheControl, CacheDirective, ContentLength, ContentType, ETag, EntityTag,
+            HeaderName,
+        },
+    },
+    mime::Mime,
+    web::{self, Bytes},
+};
+use dashmap::DashSet;
+use derive_more::{Display, Error};
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use tokio::process::Command;
-use tokio_util::io::ReaderStream;
-use tracing::{error, info, warn};
+use tokio::{sync::mpsc, task};
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Default port if no addresses are specified
 const DEFAULT_PORT: u16 = 5000;
+
+/// Number of packets to buffer in memory while streaming.
+const DEFAULT_PACKETS_ON_FLY: usize = 128;
+
+/// Size of the buffer used for reading ffmpeg output. This should be large enough to hold a few packets, but not too large to cause excessive memory usage.
+const DEFAULT_BUFFER_SIZE: usize = 32 * 1024; // 32 KB
+
+/// Maximum number of concurrent downloads to prevent resource exhaustion.
+const DEFAULT_MAX_CONCURRENT_DOWNLOADS: usize = 128;
+
+/// Background downloader state to track in-progress downloads and prevent duplicate processing of the same video ID, as well as configuration for caching and yt-dlp options.
+#[derive(Debug, Clone)]
+pub struct BackgroundDownloader {
+    /// Set of video IDs that are currently being processed to prevent duplicate downloads.
+    pub in_progress: DashSet<String>,
+    /// Directory path for caching downloaded videos.
+    pub cache_dir: Option<PathBuf>,
+    /// Cookies path for yt-dlp, if needed for accessing age-restricted or region-restricted content.
+    pub cookies_path: Option<PathBuf>,
+    /// Optional configuration for yt-dlp to use remote components.
+    pub remote_components: Option<String>,
+    /// How many downloads can be processed concurrently.
+    pub max_concurrent_downloads: usize,
+    /// Size of the buffer used for reading ffmpeg output.
+    pub buffer_size: usize,
+    /// Number of packets to buffer in memory while streaming.
+    pub packets_on_fly: usize,
+}
+
+impl BackgroundDownloader {
+    /// Checks if there is an available slot for processing a new download based on the current number of in-progress downloads and the configured maximum.
+    pub fn available_slot(&self) -> bool {
+        self.in_progress.len() < self.max_concurrent_downloads
+    }
+}
 
 /// Application state shared across handlers.
 #[derive(Debug, Clone)]
 pub struct AppState {
     /// Precompiled regex for validating YouTube video IDs
     pub youtube_id_regex: regex::Regex,
+    /// Background downloader state to track in-progress downloads and prevent duplicate processing of the same video ID.
+    pub downloader: Arc<BackgroundDownloader>,
 }
 
-/// Handler for the `/yt/{id}` endpoint. It validates the YouTube ID, uses `yt-dlp` to extract direct video and audio URLs, and then uses `ffmpeg` to stream the combined output back to the client as an MP4 file.
-#[get("/yt/{id}")]
-async fn youtube(id: web::Path<String>, app_state: web::Data<AppState>) -> impl Responder {
+/// Custom error type for the streaming process can respond the HTTP client with appropriate error messages and status codes.
+#[derive(Debug, Display, Error, Clone, Copy, PartialEq, Eq, Hash)]
+enum StreamError {
+    /// yt-dlp can't be executed, likely because it's not installed or not in the PATH.
+    #[display("Failed to execute yt-dlp")]
+    YtDlpExecute,
+
+    /// yt-dlp executed but returned a non-zero exit code, indicating an error during processing (e.g., video not found, network error).
+    #[display("yt-dlp exited with non-zero status")]
+    YtDlpNonZeroExit,
+
+    /// yt-dlp executed successfully but did not return valid video and audio URLs in the expected format.
+    #[display("Failed to parse yt-dlp output")]
+    YtDlpParseOutput,
+
+    /// ffmpeg can't be executed, likely because it's not installed or not in the PATH.
+    #[display("Failed to execute ffmpeg")]
+    FfmpegExecute,
+
+    /// ffmpeg executed but its stdout could not be captured, which is necessary for streaming the output to the client.
+    #[display("Failed to capture ffmpeg stdout")]
+    FfmpegCaptureStdout,
+}
+
+impl ResponseError for StreamError {}
+
+#[head("/yt/{id}")]
+/// Handler for the HEAD request to the `/yt/{id}` endpoint. It checks if the video is cached and responds with appropriate headers for caching and content type, without sending the actual video data.
+async fn youtube_head(
+    req: HttpRequest,
+    id: web::Path<String>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
     if !app_state.youtube_id_regex.is_match(&id) {
         return HttpResponse::BadRequest().body("Invalid YouTube ID");
     }
 
-    let Ok(yt_output) = Command::new("yt-dlp")
-        .arg("-f")
-        .arg("bestvideo[ext=mp4][vcodec^=avc],bestaudio[ext=m4a]")
-        .arg("-g")
-        .arg(format!("https://www.youtube.com/watch?v={id}"))
-        .output()
-        .await
-        .inspect_err(|e| error!("Failed to execute yt-dlp: {e}"))
-    else {
-        return HttpResponse::InternalServerError().body("Failed to execute yt-dlp");
-    };
+    let maybe_cached_path = app_state
+        .downloader
+        .cache_dir
+        .as_ref()
+        .map(|dir| dir.join(format!("{}.mp4", id)));
 
-    if !yt_output.status.success() {
-        warn!(
-            "yt-dlp exited with non-zero status: {}. Stderr: {}",
-            yt_output.status,
-            String::from_utf8_lossy(&yt_output.stderr)
-        );
-        return HttpResponse::InternalServerError().body("yt-dlp failed to extract URLs");
+    if let Some(cached_path) = maybe_cached_path
+        && cached_path.exists()
+    {
+        let file_size = match fs::metadata(&cached_path) {
+            Ok(metadata) => metadata.file_size(),
+            Err(e) => {
+                error!("Failed to get metadata for cached file ({id}): {e}");
+                return HttpResponse::InternalServerError().body("Failed to access cached file");
+            }
+        };
+
+        let mut response = HttpResponse::Ok();
+
+        response
+            .insert_header(CacheControl(vec![
+                CacheDirective::Public,
+                CacheDirective::MaxAge(31536000), // 1 year in seconds
+                CacheDirective::Extension("immutable".into(), None),
+            ]))
+            .insert_header(ETag(EntityTag::new_strong(id.to_string())))
+            .insert_header(ContentLength(file_size as usize))
+            .insert_header(ContentType("video/mp4".parse::<Mime>().unwrap()))
+            .insert_header(("x-cache", "HIT"));
+
+        if req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            == Some(&format!("\"{}\"", id))
+        {
+            trace!("Cache hit with matching ETag for video ID: {id}, returning 304 Not Modified");
+            return response.status(StatusCode::NOT_MODIFIED).finish();
+        }
+
+        response.finish()
+    } else {
+        HttpResponse::Ok()
+            .insert_header(CacheControl(vec![
+                CacheDirective::NoCache,
+                CacheDirective::NoStore,
+                CacheDirective::MustRevalidate,
+            ]))
+            .insert_header(ContentType("video/mp4".parse::<Mime>().unwrap()))
+            .insert_header(("x-cache", "MISS"))
+            .finish()
+    }
+}
+
+/// Handler for the `/yt/{id}` endpoint. It validates the YouTube ID, uses `yt-dlp` to extract direct video and audio URLs, and then uses `ffmpeg` to stream the combined output back to the client as an MP4 file.
+#[get("/yt/{id}")]
+async fn youtube(
+    req: HttpRequest,
+    id: web::Path<String>,
+    app_state: web::Data<AppState>,
+) -> impl Responder {
+    if !app_state.youtube_id_regex.is_match(&id) {
+        return HttpResponse::BadRequest().body("Invalid YouTube ID");
     }
 
-    // Parse the output. yt-dlp -g with two formats prints two lines: Video URL, then Audio URL.
-    let urls_str = String::from_utf8_lossy(&yt_output.stdout);
-    let mut lines = urls_str.lines();
+    let maybe_cached_path = app_state
+        .downloader
+        .cache_dir
+        .as_ref()
+        .map(|dir| dir.join(format!("{}.mp4", id)));
 
-    let video_url = lines.next().unwrap_or("");
-    let audio_url = lines.next().unwrap_or("");
+    if let Some(cached_path) = &maybe_cached_path
+        && cached_path.exists()
+    {
+        if req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            == Some(&format!("\"{}\"", id))
+        {
+            trace!("Cache hit with matching ETag for video ID: {id}, returning 304 Not Modified");
 
-    if video_url.is_empty() || audio_url.is_empty() {
-        warn!(
-            "yt-dlp did not return valid URLs. Output: {}",
-            String::from_utf8_lossy(&yt_output.stdout)
-        );
-        return HttpResponse::InternalServerError().body("Failed to parse direct media URLs");
+            let file_size = match fs::metadata(&cached_path) {
+                Ok(metadata) => metadata.file_size(),
+                Err(e) => {
+                    error!("Failed to get metadata for cached file ({id}): {e}");
+                    return HttpResponse::InternalServerError()
+                        .body("Failed to access cached file");
+                }
+            };
+
+            return HttpResponse::NotModified()
+                .content_type("video/mp4")
+                .insert_header(CacheControl(vec![
+                    CacheDirective::Public,
+                    CacheDirective::MaxAge(31536000), // 1 year in seconds
+                    CacheDirective::Extension("immutable".into(), None),
+                ]))
+                .insert_header(ETag(EntityTag::new_strong(id.to_string())))
+                .insert_header(ContentLength(file_size as usize))
+                .insert_header(("x-cache", "HIT"))
+                .finish();
+        }
+
+        trace!("Cache hit for video ID: {id}");
+        return match NamedFile::open_async(cached_path).await {
+            Ok(file) => {
+                let mut response = file.into_response(&req);
+
+                let headers = response.headers_mut();
+
+                headers.insert(
+                    header::CACHE_CONTROL,
+                    "public, max-age=31536000, immutable".parse().unwrap(),
+                );
+                headers.insert(header::ETAG, format!("\"{}\"", id).parse().unwrap());
+                headers.insert(HeaderName::from_static("x-cache"), "HIT".parse().unwrap());
+
+                response
+            }
+            Err(e) => {
+                error!("Failed to open cached file ({id}): {e}");
+                HttpResponse::InternalServerError().body("Failed to open cached file")
+            }
+        };
     }
 
-    let Ok(mut ffmpeg) = Command::new("ffmpeg")
-        .stderr(Stdio::null())
-        .arg("-i")
-        .arg(video_url)
-        .arg("-i")
-        .arg(audio_url)
-        .arg("-c:v")
-        .arg("copy")
-        .arg("-c:a")
-        .arg("copy")
-        .arg("-movflags")
-        .arg("frag_keyframe+empty_moov")
-        .arg("-f")
-        .arg("mp4")
-        .arg("pipe:1")
-        .stdout(Stdio::piped())
-        .spawn()
-        .inspect_err(|e| error!("Failed to spawn ffmpeg: {e}"))
-    else {
-        return HttpResponse::InternalServerError().body("Failed to spawn ffmpeg");
-    };
+    if !app_state.downloader.available_slot() {
+        warn!("Maximum concurrent downloads reached, rejecting request for video ID: {id}");
+        return HttpResponse::ServiceUnavailable()
+            .body("Server is busy processing other requests. Please try again later.");
+    }
 
-    let Some(stdout) = ffmpeg.stdout.take() else {
-        error!("Failed to capture ffmpeg stdout");
-        return HttpResponse::InternalServerError().finish();
-    };
+    let background_downloader = app_state.downloader.clone();
 
-    let stream = ReaderStream::new(stdout);
+    let (tx, rx) = mpsc::channel::<Result<Bytes, StreamError>>(app_state.downloader.packets_on_fly);
+
+    task::spawn_blocking(move || {
+        trace!("Cache miss for video ID: {id}.");
+
+        let mut yt_dlp_command = Command::new("yt-dlp");
+
+        yt_dlp_command
+            .arg("-f")
+            .arg("bestvideo[ext=mp4][vcodec^=avc],bestaudio[ext=m4a]");
+
+        if let Some(cookies) = &background_downloader.cookies_path {
+            yt_dlp_command.arg("--cookies").arg(cookies);
+        }
+
+        if let Some(remote_components) = &background_downloader.remote_components {
+            yt_dlp_command
+                .arg("--remote-components")
+                .arg(remote_components);
+        }
+
+        let Ok(yt_output) = yt_dlp_command
+            .arg("-g")
+            .arg(format!("https://www.youtube.com/watch?v={id}"))
+            .output()
+            .inspect_err(|e| error!("Failed to execute yt-dlp ({id}): {e}"))
+        else {
+            tx.try_send(Err(StreamError::YtDlpExecute))
+                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+            return;
+        };
+
+        if !yt_output.status.success() {
+            warn!(
+                "yt-dlp exited with non-zero status ({id}): {}. Stderr: {}",
+                yt_output.status,
+                String::from_utf8_lossy(&yt_output.stderr)
+            );
+            tx.try_send(Err(StreamError::YtDlpNonZeroExit))
+                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+            return;
+        }
+
+        // Parse the output. yt-dlp -g with two formats prints two lines: Video URL, then Audio URL.
+        let urls_str = String::from_utf8_lossy(&yt_output.stdout);
+        let mut lines = urls_str.lines();
+
+        let video_url = lines.next().unwrap_or("");
+        let audio_url = lines.next().unwrap_or("");
+
+        if video_url.is_empty() || audio_url.is_empty() {
+            warn!(
+                "yt-dlp did not return valid URLs for video ID: {id}. Output: {}",
+                String::from_utf8_lossy(&yt_output.stdout)
+            );
+            tx.try_send(Err(StreamError::YtDlpParseOutput))
+                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+            return;
+        }
+
+        let Ok(mut ffmpeg) = Command::new("ffmpeg")
+            .stderr(Stdio::null())
+            .arg("-i")
+            .arg(video_url)
+            .arg("-i")
+            .arg(audio_url)
+            .arg("-c:v")
+            .arg("copy")
+            .arg("-c:a")
+            .arg("copy")
+            .arg("-movflags")
+            .arg("frag_keyframe+empty_moov")
+            .arg("-f")
+            .arg("mp4")
+            .arg("pipe:1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .inspect_err(|e| error!("Failed to spawn ffmpeg ({id}): {e}"))
+        else {
+            tx.try_send(Err(StreamError::FfmpegExecute))
+                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+            return;
+        };
+
+        let maybe_temp_cache_path = app_state
+            .downloader
+            .cache_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}.frag.mp4", id)));
+
+        let Some(mut stdout) = ffmpeg.stdout.take() else {
+            error!("Failed to capture ffmpeg stdout for video ID: {id}");
+            tx.try_send(Err(StreamError::FfmpegCaptureStdout))
+                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+            return;
+        };
+
+        let cache_available = background_downloader.in_progress.insert(id.to_string());
+
+        let mut cache = if cache_available && let Some(temp_cache_path) = maybe_temp_cache_path {
+            File::create(&temp_cache_path)
+                .map(BufWriter::new)
+                .inspect_err(|e| warn!("Failed to create cache file ({id}): {e}"))
+                .ok()
+                .zip(maybe_cached_path)
+                .map(|(file_writer, cached_path)| (file_writer, temp_cache_path, cached_path))
+        } else {
+            debug!("Video ID: {id} is already being processed by another request, skipping cache");
+            None
+        };
+
+        let mut buffer = vec![0u8; app_state.downloader.buffer_size];
+
+        let mut streaming_error = false;
+        let mut cache_error = false;
+
+        loop {
+            if streaming_error && (cache.is_none() || cache_error) {
+                warn!("Both streaming and caching have failed, stopping processing");
+                break;
+            }
+
+            match stdout.read(&mut buffer) {
+                Ok(0) => {
+                    match ffmpeg.try_wait() {
+                        Ok(Some(_)) => {}
+                        Ok(None) => {
+                            warn!("FFmpeg is too slow for video ID: {id}");
+                            thread::sleep(Duration::from_secs(1));
+                            continue;
+                        }
+                        Err(e) => {
+                            error!("Error waiting for ffmpeg process to exit ({id}): {e}");
+                            break;
+                        }
+                    }
+
+                    info!("Completed streaming for video ID: {id}");
+
+                    if let Some((mut file_writer, temp_cache_path, cached_path)) = cache.take() {
+                        if let Err(e) = file_writer.flush() {
+                            warn!("Failed to flush cache file ({id}): {e}");
+                        }
+
+                        drop(file_writer);
+
+                        match Command::new("ffmpeg")
+                            .arg("-i")
+                            .arg(&temp_cache_path)
+                            .arg("-c:v")
+                            .arg("copy")
+                            .arg("-c:a")
+                            .arg("copy")
+                            .arg("-movflags")
+                            .arg("faststart")
+                            .arg(cached_path)
+                            .output()
+                        {
+                            Ok(output) => {
+                                if !output.status.success() {
+                                    warn!(
+                                        "ffmpeg exited with non-zero status while finalizing cache ({id}): {}. Stderr: {}",
+                                        output.status,
+                                        String::from_utf8_lossy(&output.stderr)
+                                    );
+                                } else {
+                                    info!("Cache file finalized for video ID: {id}");
+                                }
+
+                                if let Err(e) = fs::remove_file(&temp_cache_path) {
+                                    warn!("Failed to remove temp cache file ({id}): {e}");
+                                }
+                            }
+
+                            Err(e) => {
+                                warn!("Failed to finalize cache file ({id}): {e}");
+                            }
+                        }
+
+                        background_downloader.in_progress.remove(&id.to_string());
+                    }
+
+                    break;
+                }
+                Ok(n) => {
+                    let chunk = web::Bytes::copy_from_slice(&buffer[..n]);
+
+                    if !streaming_error && let Err(e) = tx.blocking_send(Ok(chunk)) {
+                        warn!("Failed to send chunk ({id}): {e}");
+                        streaming_error = true;
+                    }
+
+                    if let Some((file_writer, _, _)) = cache.as_mut() {
+                        if let Err(e) = file_writer.write_all(&buffer[..n]) {
+                            warn!("Failed to write to cache file ({id}): {e}");
+
+                            cache_error = true;
+                            cache = None;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Error reading from ffmpeg stdout: {e}");
+                    break;
+                }
+            }
+        }
+
+        if let Some((file_writer, temp_cache_path, _)) = cache.take() {
+            warn!(
+                "Cache file for video ID: {id} may be incomplete due to streaming error, removing temp cache file"
+            );
+
+            drop(file_writer);
+
+            if let Err(e) = fs::remove_file(&temp_cache_path) {
+                warn!("Failed to remove temp cache file ({id}): {e}");
+            }
+
+            background_downloader.in_progress.remove(&id.to_string());
+        }
+    });
+
+    let stream = ReceiverStream::new(rx);
 
     HttpResponse::Ok()
         .content_type("video/mp4")
+        .insert_header(CacheControl(vec![
+            CacheDirective::NoCache,
+            CacheDirective::NoStore,
+            CacheDirective::MustRevalidate,
+        ]))
+        .insert_header(("x-cache", "MISS"))
         .streaming(stream)
 }
 
@@ -174,15 +563,82 @@ async fn main() {
             })
     });
 
+    let cache_dir = env::var("KITTY_MEDIA_CACHE_DIR").ok().map(PathBuf::from);
+
+    if let Some(cache_dir) = &cache_dir {
+        if let Err(e) = fs::create_dir_all(cache_dir) {
+            error!("Failed to create cache directory: {e}");
+            exit(1);
+        }
+    }
+
+    let cookies_path = env::var("KITTY_MEDIA_COOKIES_PATH").ok().map(PathBuf::from);
+
+    let remote_components = env::var("KITTY_MEDIA_REMOTE_COMPONENTS").ok();
+
+    let max_concurrent_downloads = env::var("KITTY_MEDIA_MAX_CONCURRENT_DOWNLOADS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_DOWNLOADS);
+
+    let buffer_size = env::var("KITTY_MEDIA_BUFFER_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_BUFFER_SIZE);
+
+    let packets_on_fly = env::var("KITTY_MEDIA_PACKETS_ON_FLY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PACKETS_ON_FLY);
+
+    let ram_usage_per_download = buffer_size * packets_on_fly;
+    let max_ram_usage = ram_usage_per_download * max_concurrent_downloads;
+
+    if let Some(cache_dir) = &cache_dir {
+        info!("Configured cache directory: {}", cache_dir.display());
+    } else {
+        info!("No cache directory configured, caching is disabled");
+    }
+
+    info!(
+        "Configured maximum concurrent downloads: {}",
+        max_concurrent_downloads
+    );
+    info!(
+        "Buffer size: {} KB, Packets on fly: {}",
+        buffer_size / 1024,
+        packets_on_fly
+    );
+    info!(
+        "Expected maximum RAM usage: {} MB / {} MB",
+        ram_usage_per_download / (1024 * 1024),
+        max_ram_usage / (1024 * 1024)
+    );
+
     let youtube_id_regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{11}$").unwrap_or_else(|e| {
         error!("Failed to compile YouTube ID regex: {e}");
         exit(1)
     });
 
-    let app_state = web::Data::new(AppState { youtube_id_regex });
+    let app_state = web::Data::new(AppState {
+        youtube_id_regex,
+        downloader: Arc::new(BackgroundDownloader {
+            in_progress: DashSet::new(),
+            cache_dir,
+            cookies_path,
+            remote_components,
+            max_concurrent_downloads,
+            buffer_size,
+            packets_on_fly,
+        }),
+    });
 
-    let mut http_server =
-        HttpServer::new(move || App::new().service(youtube).app_data(app_state.clone()));
+    let mut http_server = HttpServer::new(move || {
+        App::new()
+            .service(youtube)
+            .service(youtube_head)
+            .app_data(app_state.clone())
+    });
 
     if let Some(config) = tls_config {
         info!("Using HTTP/2 with TLS");
