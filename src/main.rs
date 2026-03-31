@@ -208,7 +208,7 @@ async fn youtube(
         {
             trace!("Cache hit with matching ETag for video ID: {id}, returning 304 Not Modified");
 
-            let file_size = match fs::metadata(&cached_path) {
+            let file_size = match fs::metadata(cached_path) {
                 Ok(metadata) => metadata.file_size(),
                 Err(e) => {
                     error!("Failed to get metadata for cached file ({id}): {e}");
@@ -453,14 +453,13 @@ async fn youtube(
                         streaming_error = true;
                     }
 
-                    if let Some((file_writer, _, _)) = cache.as_mut() {
-                        if let Err(e) = file_writer.write_all(&buffer[..n]) {
+                    if let Some((file_writer, _, _)) = cache.as_mut()
+                        && let Err(e) = file_writer.write_all(&buffer[..n]) {
                             warn!("Failed to write to cache file ({id}): {e}");
 
                             cache_error = true;
                             cache = None;
                         }
-                    }
                 }
                 Err(e) => {
                     error!("Error reading from ffmpeg stdout: {e}");
@@ -565,12 +564,11 @@ async fn main() {
 
     let cache_dir = env::var("KITTY_MEDIA_CACHE_DIR").ok().map(PathBuf::from);
 
-    if let Some(cache_dir) = &cache_dir {
-        if let Err(e) = fs::create_dir_all(cache_dir) {
+    if let Some(cache_dir) = &cache_dir
+        && let Err(e) = fs::create_dir_all(cache_dir) {
             error!("Failed to create cache directory: {e}");
             exit(1);
         }
-    }
 
     let cookies_path = env::var("KITTY_MEDIA_COOKIES_PATH").ok().map(PathBuf::from);
 
