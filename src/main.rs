@@ -9,22 +9,103 @@
 use std::{
     env,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    process::exit,
+    process::{Stdio, exit},
     str::FromStr,
 };
 
-use actix_web::{App, HttpServer, Responder, get, web};
+use actix_web::{App, HttpResponse, HttpServer, Responder, get, web};
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
-use tracing::{error, info};
+use tokio::process::Command;
+use tokio_util::io::ReaderStream;
+use tracing::{error, info, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Default port if no addresses are specified
 const DEFAULT_PORT: u16 = 5000;
 
-#[get("/hello/{name}")]
-async fn greet(name: web::Path<String>) -> impl Responder {
-    format!("Hello, {}!", name)
+/// Application state shared across handlers.
+#[derive(Debug, Clone)]
+pub struct AppState {
+    /// Precompiled regex for validating YouTube video IDs
+    pub youtube_id_regex: regex::Regex,
+}
+
+/// Handler for the `/yt/{id}` endpoint. It validates the YouTube ID, uses `yt-dlp` to extract direct video and audio URLs, and then uses `ffmpeg` to stream the combined output back to the client as an MP4 file.
+#[get("/yt/{id}")]
+async fn youtube(id: web::Path<String>, app_state: web::Data<AppState>) -> impl Responder {
+    if !app_state.youtube_id_regex.is_match(&id) {
+        return HttpResponse::BadRequest().body("Invalid YouTube ID");
+    }
+
+    let Ok(yt_output) = Command::new("yt-dlp")
+        .arg("-f")
+        .arg("bestvideo[ext=mp4][vcodec^=avc],bestaudio[ext=m4a]")
+        .arg("-g")
+        .arg(format!("https://www.youtube.com/watch?v={id}"))
+        .output()
+        .await
+        .inspect_err(|e| error!("Failed to execute yt-dlp: {e}"))
+    else {
+        return HttpResponse::InternalServerError().body("Failed to execute yt-dlp");
+    };
+
+    if !yt_output.status.success() {
+        warn!(
+            "yt-dlp exited with non-zero status: {}. Stderr: {}",
+            yt_output.status,
+            String::from_utf8_lossy(&yt_output.stderr)
+        );
+        return HttpResponse::InternalServerError().body("yt-dlp failed to extract URLs");
+    }
+
+    // Parse the output. yt-dlp -g with two formats prints two lines: Video URL, then Audio URL.
+    let urls_str = String::from_utf8_lossy(&yt_output.stdout);
+    let mut lines = urls_str.lines();
+
+    let video_url = lines.next().unwrap_or("");
+    let audio_url = lines.next().unwrap_or("");
+
+    if video_url.is_empty() || audio_url.is_empty() {
+        warn!(
+            "yt-dlp did not return valid URLs. Output: {}",
+            String::from_utf8_lossy(&yt_output.stdout)
+        );
+        return HttpResponse::InternalServerError().body("Failed to parse direct media URLs");
+    }
+
+    let Ok(mut ffmpeg) = Command::new("ffmpeg")
+        .stderr(Stdio::null())
+        .arg("-i")
+        .arg(video_url)
+        .arg("-i")
+        .arg(audio_url)
+        .arg("-c:v")
+        .arg("copy")
+        .arg("-c:a")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("frag_keyframe+empty_moov")
+        .arg("-f")
+        .arg("mp4")
+        .arg("pipe:1")
+        .stdout(Stdio::piped())
+        .spawn()
+        .inspect_err(|e| error!("Failed to spawn ffmpeg: {e}"))
+    else {
+        return HttpResponse::InternalServerError().body("Failed to spawn ffmpeg");
+    };
+
+    let Some(stdout) = ffmpeg.stdout.take() else {
+        error!("Failed to capture ffmpeg stdout");
+        return HttpResponse::InternalServerError().finish();
+    };
+
+    let stream = ReaderStream::new(stdout);
+
+    HttpResponse::Ok()
+        .content_type("video/mp4")
+        .streaming(stream)
 }
 
 #[actix_web::main]
@@ -93,7 +174,15 @@ async fn main() {
             })
     });
 
-    let mut http_server = HttpServer::new(|| App::new().service(greet));
+    let youtube_id_regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{11}$").unwrap_or_else(|e| {
+        error!("Failed to compile YouTube ID regex: {e}");
+        exit(1)
+    });
+
+    let app_state = web::Data::new(AppState { youtube_id_regex });
+
+    let mut http_server =
+        HttpServer::new(move || App::new().service(youtube).app_data(app_state.clone()));
 
     if let Some(config) = tls_config {
         info!("Using HTTP/2 with TLS");

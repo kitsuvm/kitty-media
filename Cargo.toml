@@ -6,14 +6,12 @@ readme = "README.md"
 version = "0.1.0"
 edition = "2024"
 
-[dev-dependencies]
-tracing-test = "0.2.6"
-
 [dependencies]
 actix-web = { version = "4.13.0", default-features = false, features = ["rustls-0_23", "macros"] }
-ffmpeg-next = "8.1.0"
+regex = "1.12.3"
 rustls = "0.23.37"
 rustls-pki-types = { version = "1.14.0", features = ["std"] }
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "parking_lot"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros", "parking_lot", "process"] }
+tokio-util = "0.7.18"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "smallvec", "parking_lot", "time"] }

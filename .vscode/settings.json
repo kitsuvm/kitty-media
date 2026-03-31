@@ -1,12 +1,18 @@
 {
   "cSpell.words": [
     "actix",
+    "bestaudio",
+    "bestvideo",
     "Kitsu",
+    "moov",
+    "movflags",
     "rustls",
     "Sinabar",
     "smallvec",
     "tokio",
     "trueish",
-    "uring"
+    "uring",
+    "vcodec",
+    "youtube"
   ]
 }
