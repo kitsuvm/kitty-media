@@ -3,6 +3,7 @@
     "actix",
     "bestaudio",
     "bestvideo",
+    "cleartext",
     "dashmap",
     "etag",
     "faststart",
