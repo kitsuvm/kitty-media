@@ -1,0 +1,22 @@
+name: Rust Workflow
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check source code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Clippy
+        run: rustup component add clippy
+      - name: Check
+        run: cargo check --config 'build.rustflags = ["-Dwarnings"]'
+      - name: Run Clippy
+        run: cargo clippy --config 'build.rustflags = ["-Dwarnings"]'
