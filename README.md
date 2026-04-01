@@ -19,6 +19,7 @@ You will need to have [FFmpeg](https://ffmpeg.org/) and [yt-dlp](https://github.
 - `KITTY_MEDIA_PACKETS_ON_FLY`: The number of packets to keep in flight during download. (default: `128`)
 - `KITTY_MEDIA_FFMPEG_PATH`: The path to the FFmpeg executable. (default: `ffmpeg`)
 - `KITTY_MEDIA_YTDLP_PATH`: The path to the yt-dlp executable. (default: `yt-dlp`)
+- `KITTY_MEDIA_DELETE_OLD_THAN`: The duration in days to keep cached videos before deleting them. (default disables deletion)
 
 Then, you can run the server executable, and it will start listening for requests in the path `/yt/{url}` where `{url}` is the URL of the YouTube video like `https://www.youtube.com/watch?v=vbbGQpcrH8I`, `https://music.youtube.com/watch?v=vbbGQpcrH8I`, `https://www.youtube.com/shorts/vbbGQpcrH8I`, `https://youtu.be/vbbGQpcrH8I`, or the YouTube ID itself like `vbbGQpcrH8I`.
 

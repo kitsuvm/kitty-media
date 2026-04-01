@@ -690,6 +690,89 @@ async fn main() {
 
     let yt_dlp_path = env::var("KITTY_MEDIA_YTDLP_PATH").unwrap_or_else(|_| "yt-dlp".to_string());
 
+    if let Some(old_than_days) = env::var("KITTY_MEDIA_DELETE_OLD_THAN")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        && let Some(cache_dir) = cache_dir.clone()
+    {
+        thread::Builder::new()
+            .name("cache_cleanup".to_string())
+            .spawn(move || {
+            info!(
+                "Started background cache cleanup thread, checking for files older than {} days in {}",
+                old_than_days,
+                cache_dir.display()
+            );
+            loop {
+                debug!("Starting cache cleanup cycle...");
+                let dir = match fs::read_dir(&cache_dir) {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        warn!(
+                            "Failed to read cache directory, sleeping 1 minute before retrying: {e}"
+                        );
+                        thread::sleep(Duration::from_mins(1));
+                        continue;
+                    }
+                };
+
+                for entry in dir {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            if let Ok(metadata) = entry.metadata() {
+                                let modified_time = metadata.modified()
+                                    .unwrap_or_else(|e| {
+                                        warn!("Failed to get modified time for file ({path:?}): {e}");
+                                        std::time::UNIX_EPOCH
+                                    })
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+
+                                let accessed_time = metadata.accessed()
+                                    .unwrap_or_else(|e| {
+                                        warn!("Failed to get accessed time for file ({path:?}): {e}");
+                                        std::time::UNIX_EPOCH
+                                    })
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
+
+                                let file_time = modified_time.max(accessed_time);
+
+                                if file_time == 0 {
+                                    warn!("File has invalid modified and accessed times, skipping: {path:?}");
+                                    continue;
+                                }
+
+                                let current_time = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs();
+
+                                if current_time - file_time > old_than_days * 24 * 3600 {
+                                    if let Err(e) = fs::remove_file(&path) {
+                                        warn!("Failed to delete old cache file ({path:?}): {e}");
+                                    } else {
+                                        info!("Deleted old cache file: {path:?}");
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read cache directory entry, skipping: {e}");
+                        }
+                    }
+                }
+                info!("Finished cache cleanup, sleeping for 12 hours before next cleanup...");
+                thread::sleep(Duration::from_hours(12));
+            }
+        }).unwrap();
+    } else {
+        info!("No cache cleanup configured, old cache files will not be automatically deleted");
+    }
+
     let ram_usage_per_download = buffer_size * packets_on_fly;
     let max_ram_usage = ram_usage_per_download * max_concurrent_downloads;
 
