@@ -714,33 +714,13 @@ async fn main() {
         max_ram_usage / (1024 * 1024)
     );
 
-    let youtube_id_regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{11}$").unwrap_or_else(|e| {
+    let youtube_id_extractor = YouTubeIdExtractor::new().unwrap_or_else(|e| {
         error!("Failed to compile YouTube ID regex: {e}");
         exit(1)
     });
 
-    let youtube_url_regex = regex::Regex::new(
-        r"^(?:https?://)?(?:music\.|www\.)?youtube\.com/watch$",
-    )
-    .unwrap_or_else(|e| {
-        error!("Failed to compile YouTube URL regex: {e}");
-        exit(1)
-    });
-
-    let short_youtube_url_regex = regex::Regex::new(
-        r"^(?:https?://)?(?:www\.)?(?:youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})$",
-    )
-    .unwrap_or_else(|e| {
-        error!("Failed to compile short YouTube URL regex: {e}");
-        exit(1)
-    });
-
     let app_state = web::Data::new(AppState {
-        youtube_id_extractor: YouTubeIdExtractor {
-            youtube_id_regex,
-            youtube_url_regex,
-            short_youtube_url_regex,
-        },
+        youtube_id_extractor,
         downloader: Arc::new(BackgroundDownloader {
             in_progress: DashSet::new(),
             cache_dir,
