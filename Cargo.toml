@@ -1,6 +1,6 @@
 [package]
 name = "kitty-media"
-description = "A tool created to transcode and cache YouTube videos."
+description = "A tool created to retrieve and cache YouTube videos for streaming, using FFmpeg and yt-dlp."
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 version = "0.1.0"
