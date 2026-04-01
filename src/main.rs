@@ -31,7 +31,6 @@ use std::{
     fs::{self, File},
     io::{BufWriter, Read, Write},
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    os::windows::fs::MetadataExt,
     path::PathBuf,
     process::{Command, Stdio, exit},
     str::FromStr,
@@ -215,7 +214,7 @@ async fn youtube_head(
         && cached_path.exists()
     {
         let file_size = match fs::metadata(&cached_path) {
-            Ok(metadata) => metadata.file_size(),
+            Ok(metadata) => metadata.len(),
             Err(e) => {
                 error!("Failed to get metadata for cached file ({id}): {e}");
                 return HttpResponse::InternalServerError().body("Failed to access cached file");
@@ -292,7 +291,7 @@ async fn youtube(
             trace!("Cache hit with matching ETag for video ID: {id}, returning 304 Not Modified");
 
             let file_size = match fs::metadata(cached_path) {
-                Ok(metadata) => metadata.file_size(),
+                Ok(metadata) => metadata.len(),
                 Err(e) => {
                     error!("Failed to get metadata for cached file ({id}): {e}");
                     return HttpResponse::InternalServerError()
