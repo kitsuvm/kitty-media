@@ -6,7 +6,7 @@ A tool created to retrieve and cache YouTube videos for streaming, using FFmpeg 
 
 You will need to have [FFmpeg](https://ffmpeg.org/) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) installed, and set the following environment variables to configure the server (every variable is optional, with defaults provided where applicable):
 
-- `KITTY_MEDIA_LOG`: The log level for tracing. (e.g., `kitty_media=trace`, `kitty_media=info`)
+- `KITTY_MEDIA_LOG`: The log level for tracing. (default:`kitty_media=info`)
 - `KITTY_MEDIA_ADDRESSES`: The addresses to bind the server to, separated by commas. (e.g., `0.0.0.0:5000,[::]:5000`)
 - `KITTY_MEDIA_ENABLE_H2C`: Whether to enable HTTP/2 over clear text (H2C).
 - `KITTY_MEDIA_CERT_PATH`: The path to the certificate file for TLS.
@@ -20,12 +20,8 @@ You will need to have [FFmpeg](https://ffmpeg.org/) and [yt-dlp](https://github.
 - `KITTY_MEDIA_FFMPEG_PATH`: The path to the FFmpeg executable. (default: `ffmpeg`)
 - `KITTY_MEDIA_YTDLP_PATH`: The path to the yt-dlp executable. (default: `yt-dlp`)
 
-Then, you can run the server executable, and it will start listening for requests in the path `/yt/{video_id}` where `{video_id}` is the ID of the YouTube video you want to retrieve and cache.
+Then, you can run the server executable, and it will start listening for requests in the path `/yt/{url}` where `{url}` is the URL of the YouTube video like `https://www.youtube.com/watch?v=vbbGQpcrH8I`, `https://music.youtube.com/watch?v=vbbGQpcrH8I`, `https://www.youtube.com/shorts/vbbGQpcrH8I`, `https://youtu.be/vbbGQpcrH8I`, or the YouTube ID itself like `vbbGQpcrH8I`.
 
 ## License
 
 Kitty Media is a project from [KitsuVM](https://github.com/kitsuvm) for Sinabar Works, licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html). See the [LICENSE.txt](LICENSE.txt) file for more details.
-
-```
-
-```
