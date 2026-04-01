@@ -57,6 +57,7 @@ use dashmap::DashSet;
 use derive_more::{Display, Error};
 use rustls::ServerConfig;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+use serde::Deserialize;
 use tokio::{sync::mpsc, task};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, trace, warn};
@@ -104,11 +105,54 @@ impl BackgroundDownloader {
     }
 }
 
+/// Struct to hold precompiled regular expressions for validating YouTube video IDs and URLs.
+#[derive(Debug, Clone)]
+pub struct YouTubeIdExtractor {
+    /// Precompiled regex for validating YouTube video IDs.
+    youtube_id_regex: regex::Regex,
+    /// Precompiled regex for validating full YouTube URLs.
+    youtube_url_regex: regex::Regex,
+    /// Precompiled regex for validating short YouTube URLs.
+    short_youtube_url_regex: regex::Regex,
+}
+
+impl YouTubeIdExtractor {
+    /// Creates a new instance of `YouTubeIdExtractor` with precompiled regular expressions for validating YouTube video IDs and URLs.
+    pub fn new() -> Result<Self, regex::Error> {
+        Ok(Self {
+            youtube_id_regex: regex::Regex::new(r"^[a-zA-Z0-9_-]{11}$")?,
+            youtube_url_regex: regex::Regex::new(
+                r"^(?:https?://)?(?:music\.|www\.)?youtube\.com/watch$",
+            )?,
+            short_youtube_url_regex: regex::Regex::new(
+                r"^(?:https?://)?(?:www\.)?(?:youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})$",
+            )?,
+        })
+    }
+
+    /// Extracts the YouTube video ID from the given path and query parameters. It supports full YouTube URLs, short URLs, and direct video IDs, validating them against the precompiled regular expressions.
+    pub fn extract_id(&self, path: &str, query: &YoutubeQuery) -> Option<String> {
+        if self.youtube_url_regex.is_match(path) {
+            debug!("Received full YouTube URL: {path}");
+            query.v.clone()
+        } else if let Some(captures) = self.short_youtube_url_regex.captures(path) {
+            debug!("Received short YouTube URL: {path}");
+            captures.get(1).map(|m| m.as_str().to_string())
+        } else if self.youtube_id_regex.is_match(path) {
+            debug!("Received YouTube ID: {path}");
+            Some(path.to_string())
+        } else {
+            debug!("Invalid YouTube ID or URL: {path}");
+            None
+        }
+    }
+}
+
 /// Application state shared across handlers.
 #[derive(Debug, Clone)]
 pub struct AppState {
-    /// Precompiled regex for validating YouTube video IDs
-    pub youtube_id_regex: regex::Regex,
+    /// Precompiled regular expressions for validating YouTube video IDs and URLs.
+    pub youtube_id_extractor: YouTubeIdExtractor,
     /// Background downloader state to track in-progress downloads and prevent duplicate processing of the same video ID.
     pub downloader: Arc<BackgroundDownloader>,
 }
@@ -139,16 +183,27 @@ enum StreamError {
 
 impl ResponseError for StreamError {}
 
-#[head("/yt/{id}")]
-/// Handler for the HEAD request to the `/yt/{id}` endpoint. It checks if the video is cached and responds with appropriate headers for caching and content type, without sending the actual video data.
+/// Query parameters used by YouTube.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct YoutubeQuery {
+    /// The YouTube video ID extracted from the URL query parameters.
+    v: Option<String>,
+}
+
+#[head("/yt/{path:.*}")]
+/// Handler for the HEAD request to the `/yt/{url}?v={video_id}` endpoint. It checks if the video is cached and responds with appropriate headers for caching and content type, without sending the actual video data.
 async fn youtube_head(
     req: HttpRequest,
-    id: web::Path<String>,
+    path: web::Path<String>,
+    query: web::Query<YoutubeQuery>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    if !app_state.youtube_id_regex.is_match(&id) {
-        return HttpResponse::BadRequest().body("Invalid YouTube ID");
-    }
+    let id = match app_state.youtube_id_extractor.extract_id(&path, &query) {
+        Some(video_id) => video_id,
+        None => {
+            return HttpResponse::BadRequest().body("Invalid YouTube ID or URL");
+        }
+    };
 
     let maybe_cached_path = app_state
         .downloader
@@ -204,16 +259,20 @@ async fn youtube_head(
     }
 }
 
-/// Handler for the `/yt/{id}` endpoint. It validates the YouTube ID, uses `yt-dlp` to extract direct video and audio URLs, and then uses `ffmpeg` to stream the combined output back to the client as an MP4 file.
-#[get("/yt/{id}")]
+/// Handler for the `/yt/{url}?v={video_id}` endpoint. It validates the YouTube ID, uses `yt-dlp` to extract direct video and audio URLs, and then uses `ffmpeg` to stream the combined output back to the client as an MP4 file while optionally caching the result for future requests.
+#[get("/yt/{path:.*}")]
 async fn youtube(
     req: HttpRequest,
-    id: web::Path<String>,
+    path: web::Path<String>,
+    query: web::Query<YoutubeQuery>,
     app_state: web::Data<AppState>,
 ) -> impl Responder {
-    if !app_state.youtube_id_regex.is_match(&id) {
-        return HttpResponse::BadRequest().body("Invalid YouTube ID");
-    }
+    let id = match app_state.youtube_id_extractor.extract_id(&path, &query) {
+        Some(video_id) => video_id,
+        None => {
+            return HttpResponse::BadRequest().body("Invalid YouTube ID or URL");
+        }
+    };
 
     let maybe_cached_path = app_state
         .downloader
@@ -254,7 +313,7 @@ async fn youtube(
                 .finish();
         }
 
-        trace!("Cache hit for video ID: {id}");
+        info!("Cache HIT for video ID: {id}, serving cached file...");
         return match NamedFile::open_async(cached_path).await {
             Ok(file) => {
                 let mut response = file.into_response(&req);
@@ -288,7 +347,7 @@ async fn youtube(
     let (tx, rx) = mpsc::channel::<Result<Bytes, StreamError>>(app_state.downloader.packets_on_fly);
 
     task::spawn_blocking(move || {
-        trace!("Cache miss for video ID: {id}.");
+        info!("Cache MISS, processing video ID: {id}");
 
         let mut yt_dlp_command = Command::new(&app_state.downloader.yt_dlp_path);
 
@@ -392,7 +451,9 @@ async fn youtube(
                 .zip(maybe_cached_path)
                 .map(|(file_writer, cached_path)| (file_writer, temp_cache_path, cached_path))
         } else {
-            debug!("Video ID: {id} is already being processed by another request, skipping cache");
+            debug!(
+                "Video ID: {id} is already being processed by another request, skipping cache..."
+            );
             None
         };
 
@@ -402,8 +463,15 @@ async fn youtube(
         let mut cache_error = false;
 
         loop {
-            if streaming_error && (cache.is_none() || cache_error) {
-                warn!("Both streaming and caching have failed, stopping processing");
+            if streaming_error && cache.is_none() {
+                info!(
+                    "Streaming has failed and caching is disabled, stopping processing video ID: {id}"
+                );
+                break;
+            }
+
+            if streaming_error && (cache.is_some() && cache_error) {
+                warn!("Both streaming and caching have failed, stopping processing video ID: {id}");
                 break;
             }
 
@@ -526,7 +594,10 @@ async fn youtube(
 async fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer())
-        .with(EnvFilter::from_env("KITTY_MEDIA_LOG"))
+        .with(
+            EnvFilter::try_from_env("KITTY_MEDIA_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("kitty_media=info")),
+        )
         .init();
 
     let addresses = env::var("KITTY_MEDIA_ADDRESSES")
@@ -648,8 +719,28 @@ async fn main() {
         exit(1)
     });
 
+    let youtube_url_regex = regex::Regex::new(
+        r"^(?:https?://)?(?:music\.|www\.)?youtube\.com/watch$",
+    )
+    .unwrap_or_else(|e| {
+        error!("Failed to compile YouTube URL regex: {e}");
+        exit(1)
+    });
+
+    let short_youtube_url_regex = regex::Regex::new(
+        r"^(?:https?://)?(?:www\.)?(?:youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})$",
+    )
+    .unwrap_or_else(|e| {
+        error!("Failed to compile short YouTube URL regex: {e}");
+        exit(1)
+    });
+
     let app_state = web::Data::new(AppState {
-        youtube_id_regex,
+        youtube_id_extractor: YouTubeIdExtractor {
+            youtube_id_regex,
+            youtube_url_regex,
+            short_youtube_url_regex,
+        },
         downloader: Arc::new(BackgroundDownloader {
             in_progress: DashSet::new(),
             cache_dir,
