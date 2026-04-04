@@ -62,6 +62,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::yt_dlp::{RemoteComponents, YtDlp};
+
+mod yt_dlp;
+
 /// Default port if no addresses are specified
 const DEFAULT_PORT: u16 = 5000;
 
@@ -81,10 +85,6 @@ pub struct BackgroundDownloader {
     pub in_progress: DashSet<String>,
     /// Directory path for caching downloaded videos.
     pub cache_dir: Option<PathBuf>,
-    /// Cookies path for yt-dlp, if needed for accessing age-restricted or region-restricted content.
-    pub cookies_path: Option<PathBuf>,
-    /// Optional configuration for yt-dlp to use remote components.
-    pub remote_components: Option<String>,
     /// How many downloads can be processed concurrently.
     pub max_concurrent_downloads: usize,
     /// Size of the buffer used for reading ffmpeg output.
@@ -93,8 +93,8 @@ pub struct BackgroundDownloader {
     pub packets_on_fly: usize,
     /// Path to the ffmpeg executable, allowing for custom paths or versions.
     pub ffmpeg_path: String,
-    /// Path to the yt-dlp executable, allowing for custom paths or versions.
-    pub yt_dlp_path: String,
+    /// Wrapper around yt-dlp to extract video and audio URLs.
+    pub yt_dlp: YtDlp,
 }
 
 impl BackgroundDownloader {
@@ -162,10 +162,6 @@ enum StreamError {
     /// yt-dlp can't be executed, likely because it's not installed or not in the PATH.
     #[display("Failed to execute yt-dlp")]
     YtDlpExecute,
-
-    /// yt-dlp executed but returned a non-zero exit code, indicating an error during processing (e.g., video not found, network error).
-    #[display("yt-dlp exited with non-zero status")]
-    YtDlpNonZeroExit,
 
     /// yt-dlp executed successfully but did not return valid video and audio URLs in the expected format.
     #[display("Failed to parse yt-dlp output")]
@@ -348,67 +344,38 @@ async fn youtube(
     task::spawn_blocking(move || {
         info!("Cache MISS, processing video ID: {id}");
 
-        let mut yt_dlp_command = Command::new(&app_state.downloader.yt_dlp_path);
-
-        yt_dlp_command
-            .arg("-f")
-            .arg("bestvideo[ext=mp4][vcodec^=avc],bestaudio[ext=m4a]");
-
-        if let Some(cookies) = &background_downloader.cookies_path {
-            yt_dlp_command.arg("--cookies").arg(cookies);
-        }
-
-        if let Some(remote_components) = &background_downloader.remote_components {
-            yt_dlp_command
-                .arg("--remote-components")
-                .arg(remote_components);
-        }
-
-        let Ok(yt_output) = yt_dlp_command
-            .arg("-g")
-            .arg(format!("https://www.youtube.com/watch?v={id}"))
-            .output()
-            .inspect_err(|e| error!("Failed to execute yt-dlp ({id}): {e}"))
-        else {
-            tx.try_send(Err(StreamError::YtDlpExecute))
-                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
-            return;
+        let yt_dlp_output = match background_downloader.yt_dlp.get_content_url(
+            &format!("https://youtube.com/watch?v={id}"),
+            Default::default(),
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("yt-dlp error for video ID: {id}: {e}");
+                tx.blocking_send(Err(StreamError::YtDlpExecute))
+                    .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+                return;
+            }
         };
 
-        if !yt_output.status.success() {
-            warn!(
-                "yt-dlp exited with non-zero status ({id}): {}. Stderr: {}",
-                yt_output.status,
-                String::from_utf8_lossy(&yt_output.stderr)
-            );
-            tx.try_send(Err(StreamError::YtDlpNonZeroExit))
-                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
-            return;
-        }
-
-        // Parse the output. yt-dlp -g with two formats prints two lines: Video URL, then Audio URL.
-        let urls_str = String::from_utf8_lossy(&yt_output.stdout);
-        let mut lines = urls_str.lines();
-
-        let video_url = lines.next().unwrap_or("");
-        let audio_url = lines.next().unwrap_or("");
-
-        if video_url.is_empty() || audio_url.is_empty() {
-            warn!(
-                "yt-dlp did not return valid URLs for video ID: {id}. Output: {}",
-                String::from_utf8_lossy(&yt_output.stdout)
-            );
-            tx.try_send(Err(StreamError::YtDlpParseOutput))
-                .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
-            return;
-        }
+        let (video_url, audio_url) = match yt_dlp_output {
+            yt_dlp::ContentUrl::Separate {
+                video_url,
+                audio_url,
+            } => (video_url, audio_url),
+            _ => {
+                error!("yt-dlp did not return separate video and audio URLs for video ID: {id}");
+                tx.blocking_send(Err(StreamError::YtDlpParseOutput))
+                    .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
+                return;
+            }
+        };
 
         let Ok(mut ffmpeg) = Command::new(&app_state.downloader.ffmpeg_path)
             .stderr(Stdio::null())
             .arg("-i")
-            .arg(video_url)
+            .arg(video_url.as_str())
             .arg("-i")
-            .arg(audio_url)
+            .arg(audio_url.as_str())
             .arg("-c:v")
             .arg("copy")
             .arg("-c:a")
@@ -668,7 +635,15 @@ async fn main() {
 
     let cookies_path = env::var("KITTY_MEDIA_COOKIES_PATH").ok().map(PathBuf::from);
 
-    let remote_components = env::var("KITTY_MEDIA_REMOTE_COMPONENTS").ok();
+    let remote_components = env::var("KITTY_MEDIA_REMOTE_COMPONENTS")
+        .ok()
+        .map(|s| s.parse::<RemoteComponents>())
+        .transpose()
+        .unwrap_or_else(|e| {
+            error!("Failed to parse remote components: {e}");
+            exit(1)
+        })
+        .unwrap_or_default();
 
     let max_concurrent_downloads = env::var("KITTY_MEDIA_MAX_CONCURRENT_DOWNLOADS")
         .ok()
@@ -806,13 +781,11 @@ async fn main() {
         downloader: Arc::new(BackgroundDownloader {
             in_progress: DashSet::new(),
             cache_dir,
-            cookies_path,
-            remote_components,
             max_concurrent_downloads,
             buffer_size,
             packets_on_fly,
             ffmpeg_path,
-            yt_dlp_path,
+            yt_dlp: YtDlp::new(yt_dlp_path, remote_components, cookies_path),
         }),
     });
 
