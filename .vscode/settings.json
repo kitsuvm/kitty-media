@@ -11,6 +11,7 @@
     "Kitsu",
     "moov",
     "movflags",
+    "rusqlite",
     "rustls",
     "serde",
     "Sinabar",
