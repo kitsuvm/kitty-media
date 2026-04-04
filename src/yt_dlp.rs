@@ -1,4 +1,4 @@
-//! A wrapper around yt-dlp to extract metadata and download media.
+//! A wrapper around yt-dlp.
 
 use std::{
     fmt, io,
@@ -9,7 +9,7 @@ use std::{
 
 use url::{ParseError, Url};
 
-/// A wrapper around yt-dlp to extract metadata and download media.
+/// A wrapper around yt-dlp to make an easier and "Rusty" interface for interacting with yt-dlp.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct YtDlp {
     /// The command to execute yt-dlp, which can be a path to the executable or a command available in the system's PATH.
