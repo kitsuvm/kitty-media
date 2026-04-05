@@ -159,14 +159,6 @@ pub struct AppState {
 /// Custom error type for the streaming process can respond the HTTP client with appropriate error messages and status codes.
 #[derive(Debug, Display, Error, Clone, Copy, PartialEq, Eq, Hash)]
 enum StreamError {
-    /// yt-dlp can't be executed, likely because it's not installed or not in the PATH.
-    #[display("Failed to execute yt-dlp")]
-    YtDlpExecute,
-
-    /// yt-dlp executed successfully but did not return valid video and audio URLs in the expected format.
-    #[display("Failed to parse yt-dlp output")]
-    YtDlpParseOutput,
-
     /// ffmpeg can't be executed, likely because it's not installed or not in the PATH.
     #[display("Failed to execute ffmpeg")]
     FfmpegExecute,
@@ -341,33 +333,29 @@ async fn youtube(
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, StreamError>>(app_state.downloader.packets_on_fly);
 
+    let yt_dlp_output = match background_downloader
+        .yt_dlp
+        .get_media_url(
+            &format!("https://youtube.com/watch?v={id}"),
+            Default::default(),
+        )
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            error!("yt-dlp error for video ID: {id}: {e}");
+            return HttpResponse::InternalServerError().body("Failed to retrieve media URL");
+        }
+    };
+
     task::spawn_blocking(move || {
         info!("Cache MISS, processing video ID: {id}");
 
-        let yt_dlp_output = match background_downloader.yt_dlp.get_content_url(
-            &format!("https://youtube.com/watch?v={id}"),
-            Default::default(),
-        ) {
-            Ok(v) => v,
-            Err(e) => {
-                error!("yt-dlp error for video ID: {id}: {e}");
-                tx.blocking_send(Err(StreamError::YtDlpExecute))
-                    .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
-                return;
-            }
-        };
-
         let (video_url, audio_url) = match yt_dlp_output {
-            yt_dlp::ContentUrl::Separate {
+            yt_dlp::MediaUrl::Separate {
                 video_url,
                 audio_url,
             } => (video_url, audio_url),
-            _ => {
-                error!("yt-dlp did not return separate video and audio URLs for video ID: {id}");
-                tx.blocking_send(Err(StreamError::YtDlpParseOutput))
-                    .unwrap_or_else(|e| error!("Failed to send error response ({id}): {e}"));
-                return;
-            }
         };
 
         let Ok(mut ffmpeg) = Command::new(&app_state.downloader.ffmpeg_path)
@@ -662,8 +650,6 @@ async fn main() {
 
     let ffmpeg_path = env::var("KITTY_MEDIA_FFMPEG_PATH").unwrap_or_else(|_| "ffmpeg".to_string());
 
-    let yt_dlp_path = env::var("KITTY_MEDIA_YTDLP_PATH").unwrap_or_else(|_| "yt-dlp".to_string());
-
     if let Some(old_than_days) = env::var("KITTY_MEDIA_DELETE_OLD_THAN")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -776,6 +762,11 @@ async fn main() {
         exit(1)
     });
 
+    let yt_dlp = YtDlp::new(remote_components, cookies_path).unwrap_or_else(|e| {
+        error!("Failed to initialize yt-dlp: {e}");
+        exit(1)
+    });
+
     let app_state = web::Data::new(AppState {
         youtube_id_extractor,
         downloader: Arc::new(BackgroundDownloader {
@@ -785,7 +776,7 @@ async fn main() {
             buffer_size,
             packets_on_fly,
             ffmpeg_path,
-            yt_dlp: YtDlp::new(yt_dlp_path, remote_components, cookies_path),
+            yt_dlp,
         }),
     });
 

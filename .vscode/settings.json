@@ -1,14 +1,18 @@
 {
   "cSpell.words": [
     "actix",
+    "asyncio",
     "bestaudio",
     "bestvideo",
     "cleartext",
+    "cookiefile",
     "dashmap",
     "etag",
     "faststart",
+    "getattr",
     "github",
     "Kitsu",
+    "kwargs",
     "moov",
     "movflags",
     "rusqlite",
