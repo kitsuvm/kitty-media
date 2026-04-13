@@ -53,6 +53,7 @@ impl MediaUrl {
         }
     }
 
+    /// Parses a Python list output from yt-dlp into a [`MediaUrl`] enum variant, handling the expected format for separate video and audio URLs.
     pub fn from_python_list<'a, T: PyListMethods<'a>>(
         list: &T,
         _format: Format,
