@@ -77,8 +77,10 @@ impl YtDlp {
             }
 
             if let Some(remote_components_arg) = self.remote_components.as_arg() {
+                let remote_components = PyList::new(py, [remote_components_arg]).map_err(Error::Cast)?;
+
                 ydl_opts
-                    .set_item("remote_components", remote_components_arg)
+                    .set_item("remote_components", remote_components)
                     .map_err(Error::SetDictItem)?;
             }
 
