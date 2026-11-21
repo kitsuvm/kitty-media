@@ -1,0 +1,18 @@
+[package]
+name = "kitty-media"
+version = "0.1.0"
+edition = "2024"
+description = "Post-upload media processing tool."
+authors = ["Kitsu/VM <contact@kitsuvm.com>"]
+license = "MIT"
+repository = "https://github.com/kitsuvm/kitty-media"
+keywords = ["media", "video", "image", "audio", "processing"]
+categories = ["multimedia", "multimedia::audio", "multimedia::video", "multimedia::images", "api-bindings"]
+
+[lib]
+
+[[bin]]
+name = "kitty-media"
+
+[dependencies]
+sea-orm = { version = "2.0.0", optional = true, features = ["macros", "runtime-tokio-rustls", "sqlx-sqlite"] }
