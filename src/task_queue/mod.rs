@@ -5,7 +5,8 @@ use sea_orm::{Database, DatabaseConnection};
 
 pub use sea_orm::DbErr;
 
-pub mod models;
+#[allow(missing_docs, clippy::missing_docs_in_private_items)]
+mod models;
 
 /// Interface to the database containing the task queue.
 pub struct TaskQueueDatabase {

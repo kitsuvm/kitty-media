@@ -1,13 +1,14 @@
 use std::{env, process::ExitCode};
 
 use kitty_media::task_queue::TaskQueueDatabase;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub const EXIT_CODE_CONFIG_ERROR: u8 = 1;
 pub const EXIT_CODE_DATABASE_ERROR: u8 = 2;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+#[cfg(feature = "logger")]
+fn init_logger() {
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -20,6 +21,12 @@ async fn main() -> ExitCode {
             )),
         )
         .init();
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    #[cfg(feature = "logger")]
+    init_logger();
 
     let connection_string = match env::var("KITTY_MEDIA_DATABASE_URL") {
         Ok(url) => url,
