@@ -3,3 +3,5 @@
 
 #[cfg(feature = "database")]
 pub mod task_queue;
+
+pub mod models;
