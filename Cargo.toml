@@ -15,11 +15,12 @@ members = [".", "migration/remote"]
 
 [features]
 database = ["dep:sea-orm", "serde", "dep:rmp-serde", "dep:migration-remote"]
-default = ["http-server", "postgres", "logger"]
+default = ["http-server", "postgres", "logger", "mysql"]
 http-client = ["dep:reqwest", "serde", "dep:serde_json"]
 http-server = ["dep:actix-web", "serde", "dep:serde_json", "database", "media-engine"]
 logger = ["dep:tracing-subscriber"]
 media-engine = []
+mysql = ["sea-orm/sqlx-mysql"]
 postgres = ["sea-orm/sqlx-postgres"]
 serde = ["dep:serde"]
 
