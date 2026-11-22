@@ -1,7 +1,8 @@
 # Kitty Media // Roadmap
 
-- [ ] Implement task queue using SeaORM
+- [x] Implement task queue using SeaORM
 - [ ] Implement task insertting with Actix Web
+- [ ] Implement configuration file using Serde and TOML
 - [ ] Implement local repository with upload and serving
 - [ ] Implement remote URL-based repository with download and upload
 - [ ] Implement remote S3-based repository with download and upload
