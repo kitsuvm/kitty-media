@@ -15,7 +15,7 @@ impl MigrationTrait for Migration {
                     .col(date_time_default_now("created_at"))
                     .col(string("input").not_null())
                     .col(string("output").not_null())
-                    .col(string("options").not_null())
+                    .col(binary("options").not_null())
                     .col(date_time_null("processing_at"))
                     .col(date_time_null("completed_at"))
                     .to_owned(),

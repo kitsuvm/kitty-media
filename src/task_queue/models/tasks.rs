@@ -7,11 +7,13 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: i64,
-    pub created_at: DateTime,
+    pub created_at: TimeDateTime,
     pub input: String,
     pub output: String,
-    pub processing_at: Option<DateTime>,
-    pub completed_at: Option<DateTime>,
+    #[sea_orm(column_type = "Binary(1)")]
+    pub options: Vec<u8>,
+    pub processing_at: Option<TimeDateTime>,
+    pub completed_at: Option<TimeDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
