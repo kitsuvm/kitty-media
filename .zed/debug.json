@@ -7,9 +7,10 @@
     },
     "env": {
       "KITTY_MEDIA_LOG": "kitty_media=debug",
-      "KITTY_MEDIA_DATABASE_URL": "sqlite://$ZED_WORKTREE_ROOT/test-data/task-queue.db?mode=rwc"
+      "KITTY_MEDIA_DATABASE_URL": "sqlite://test-data/task-queue.db?mode=rwc"
     },
     "program": "$ZED_WORKTREE_ROOT/target/debug/kitty-media",
+    "cwd": "$ZED_WORKTREE_ROOT",
     "sourceLanguages": ["rust"],
     "request": "launch",
     "adapter": "CodeLLDB"

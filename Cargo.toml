@@ -9,6 +9,10 @@ repository = "https://github.com/kitsuvm/kitty-media"
 keywords = ["media", "video", "image", "audio", "processing"]
 categories = ["multimedia", "multimedia::audio", "multimedia::video", "multimedia::images", "api-bindings"]
 
+[workspace]
+resolver = "3"
+members = [".", "migration/remote"]
+
 [features]
 default = ["task-queue", "postgres"]
 task-queue = ["dep:sea-orm"]
@@ -24,4 +28,8 @@ required-features = ["task-queue", "postgres"]
 name = "kitty-media-test"
 
 [dependencies]
+migration-remote = { package = "migration", path = "migration/remote" }
 sea-orm = { version = "2.0.0", optional = true, features = ["macros", "runtime-tokio-rustls", "sqlx-sqlite"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
