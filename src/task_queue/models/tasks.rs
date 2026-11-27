@@ -14,7 +14,7 @@ pub struct Model {
     pub options: Vec<u8>,
     pub processing_at: Option<TimeDateTime>,
     pub completed_at: Option<TimeDateTime>,
-    pub attempts: i64,
+    pub attempts: i8,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

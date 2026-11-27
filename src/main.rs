@@ -54,7 +54,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let max_attempts = match env::var("KITTY_MEDIA_MAX_ATTEMPTS").map(|v| v.parse::<u8>()) {
+    let max_attempts = match env::var("KITTY_MEDIA_MAX_ATTEMPTS").map(|v| v.parse::<i8>()) {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
             tracing::error!("Failed to parse KITTY_MEDIA_MAX_ATTEMPTS: {e}");

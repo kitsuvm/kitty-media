@@ -31,7 +31,7 @@ pub struct TaskQueueDatabase {
     /// The ID generator for creating unique task IDs.
     id_gen: Mutex<Generator>,
     /// The maximum number of attempts allowed for processing a task.
-    max_attempts: u8,
+    max_attempts: i8,
 }
 
 impl TaskQueueDatabase {
@@ -39,8 +39,14 @@ impl TaskQueueDatabase {
     pub async fn new(
         connection_string: &str,
         machine_id: u16,
-        max_attempts: u8,
+        max_attempts: i8,
     ) -> Result<Self, DbErr> {
+        if max_attempts < 1 {
+            return Err(DbErr::Custom(
+                "max_attempts must be greater than 0".to_owned(),
+            ));
+        }
+
         let id_gen = Mutex::new(
             Generator::builder()
                 .epoch(KITTY_MEDIA_EPOCH.into())
@@ -54,9 +60,9 @@ impl TaskQueueDatabase {
         Migrator::up(&db, None).await?;
 
         Ok(Self {
+            max_attempts: max_attempts as i8,
             db,
             id_gen,
-            max_attempts,
         })
     }
 
@@ -258,7 +264,7 @@ impl TaskQueueDatabase {
                             .order_by_asc(tasks::Column::ProcessingAt)
                             .limit(limit)
                             .lock_with_behavior(LockType::Update, LockBehavior::SkipLocked)
-                            .into_tuple::<(i64, u8)>()
+                            .into_tuple::<(i64, i8)>()
                             .all(tx)
                             .await?;
 
