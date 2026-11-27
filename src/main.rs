@@ -2,12 +2,17 @@
 #![doc = include_str!("../README.md")]
 use std::{env, process::ExitCode};
 
-use kitty_media::task_queue::TaskQueueDatabase;
+use kitty_media::{http_server::create_http_server, task_queue::TaskQueueDatabase};
+use tokio::select;
 
 /// Exit code for configuration errors.
 pub const EXIT_CODE_CONFIG_ERROR: u8 = 1;
 /// Exit code for database errors.
 pub const EXIT_CODE_DATABASE_ERROR: u8 = 2;
+/// Exit code for server setup errors.
+pub const EXIT_CODE_SERVER_SETUP_ERROR: u8 = 3;
+/// Exit code for server runtime errors.
+pub const EXIT_CODE_SERVER_RUNTIME_ERROR: u8 = 4;
 
 #[cfg(feature = "logger")]
 /// Initializes the logger using the [`tracing`] crate.
@@ -63,13 +68,39 @@ async fn main() -> ExitCode {
         Err(_) => 3,
     };
 
-    let _ = match TaskQueueDatabase::new(&connection_string, machine_id, max_attempts).await {
-        Ok(db) => db,
-        Err(e) => {
-            tracing::error!("Failed to initialize task queue database: {e}");
-            return ExitCode::from(EXIT_CODE_DATABASE_ERROR);
+    let remote_task_queue =
+        match TaskQueueDatabase::new(&connection_string, machine_id, max_attempts).await {
+            Ok(db) => db,
+            Err(e) => {
+                tracing::error!("Failed to initialize task queue database: {e}");
+                return ExitCode::from(EXIT_CODE_DATABASE_ERROR);
+            }
+        };
+
+    let host = env::var("KITTY_MEDIA_HOST").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    let token =
+        env::var("KITTY_MEDIA_AUTH_TOKEN").unwrap_or_else(|_| "your_token_here".to_string());
+
+    tracing::debug!("Creating http server instance...");
+    match create_http_server(&host, remote_task_queue, token) {
+        Ok(v) => {
+            tracing::info!("Initialized HTTP server, listening on {host}");
+
+            select! {
+                _ = v => {
+                    tracing::error!("HTTP server exited unexpectedly");
+                    return ExitCode::from(EXIT_CODE_SERVER_RUNTIME_ERROR);
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Received Ctrl+C, shutting down...");
+                }
+            }
         }
-    };
+        Err(e) => {
+            tracing::error!("Failed to create HTTP server: {e}");
+            return ExitCode::from(EXIT_CODE_SERVER_SETUP_ERROR);
+        }
+    }
 
     ExitCode::SUCCESS
 }
