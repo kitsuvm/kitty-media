@@ -5,8 +5,7 @@
 - [x] Implement overwrite on output
 - [ ] Implement task insertting with Actix Web
 - [ ] Implement configuration file using Serde and TOML
-- [ ] Implement local repository with upload and serving
-- [ ] Implement remote URL-based repository with download and upload
+- [ ] Implement local repository
 - [ ] Implement remote S3-based repository with download and upload
 - [ ] Implement local task queue for picking up tasks and processing them
 - [ ] Implement image-to-image (png, jxl, jpeg, webp, avif)
