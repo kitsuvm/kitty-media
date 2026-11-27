@@ -1,0 +1,12 @@
+[
+  {
+    "label": "Migrate remote for test-data",
+    "command": "cargo run --package=\"migration-remote\" --features=dev -- --database-url=sqlite://test-data/task-queue.db?mode=rwc",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  },
+  {
+    "label": "Generate remote entities from test-data",
+    "command": "sea-orm-cli generate entity --database-url=sqlite://test-data/task-queue.db?mode=rwc --output-dir=src/task_queue/models --date-time-crate=time",
+    "cwd": "$ZED_WORKTREE_ROOT"
+  }
+]

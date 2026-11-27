@@ -1,6 +1,6 @@
 [package]
 edition      = "2024"
-name         = "migration"
+name         = "migration-remote"
 publish      = false
 rust-version = "1.85.0"
 version      = "0.1.0"
@@ -8,6 +8,9 @@ version      = "0.1.0"
 [lib]
 name = "migration"
 path = "src/lib.rs"
+
+[features]
+dev = ["sea-orm-migration/runtime-tokio-rustls", "sea-orm-migration/sqlx-sqlite"]
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

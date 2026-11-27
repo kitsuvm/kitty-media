@@ -1693,7 +1693,7 @@ name = "kitty-media"
 version = "0.1.0"
 dependencies = [
  "actix-web",
- "migration",
+ "migration-remote",
  "reqwest",
  "rmp-serde",
  "sea-orm",
@@ -1899,7 +1899,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "migration"
+name = "migration-remote"
 version = "0.1.0"
 dependencies = [
  "sea-orm-migration",
@@ -2692,6 +2692,9 @@ dependencies = [
  "glob",
  "indoc",
  "regex",
+ "sea-schema",
+ "sqlx",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
