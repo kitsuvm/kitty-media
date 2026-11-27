@@ -18,6 +18,7 @@ impl MigrationTrait for Migration {
                     .col(binary("options").not_null())
                     .col(date_time_null("processing_at"))
                     .col(date_time_null("completed_at"))
+                    .col(tiny_integer_null("attempts").not_null().default(0))
                     .to_owned(),
             )
             .await?;
@@ -38,6 +39,16 @@ impl MigrationTrait for Migration {
                     .name("idx-tasks-completed_at")
                     .table("tasks")
                     .col("completed_at")
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx-tasks-created_at")
+                    .table("tasks")
+                    .col("created_at")
                     .to_owned(),
             )
             .await?;
@@ -63,6 +74,15 @@ impl MigrationTrait for Migration {
             .drop_index(
                 Index::drop()
                     .name("idx-tasks-completed_at")
+                    .table("tasks")
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .drop_index(
+                Index::drop()
+                    .name("idx-tasks-created_at")
                     .table("tasks")
                     .to_owned(),
             )
