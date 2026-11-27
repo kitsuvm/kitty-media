@@ -1,6 +1,8 @@
 # Kitty Media // Roadmap
 
 - [x] Implement task queue using SeaORM
+- [x] Implement delete input on complete
+- [x] Implement overwrite on output
 - [ ] Implement task insertting with Actix Web
 - [ ] Implement configuration file using Serde and TOML
 - [ ] Implement local repository with upload and serving
@@ -8,9 +10,13 @@
 - [ ] Implement remote S3-based repository with download and upload
 - [ ] Implement local task queue for picking up tasks and processing them
 - [ ] Implement image-to-image (png, jxl, jpeg, webp, avif)
+- [ ] Implement retry system for repository operations
+- [ ] Implement webhooks for task completion or fail
+- [ ] Implement system cleanup for old and uncompleted tasks
 - [ ] Implement image blurhash and the other algorithm used by Next.js
 - [ ] Implement animated image (apng, gif, webp, avif)
 - [ ] Implement audio-to-audio using FFmpeg-next (opus, ogg, mp3, aac)
 - [ ] Implement video-to-video (mp4, webm, mkv, mov/h264, vp9, av1)
 - [ ] Implement video-to-audio
 - [ ] Implement video-to-image (thumbnail extraction)
+- [ ] Implement file compression (deflate, gzip, ztsd, lzma2, xz)
