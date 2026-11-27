@@ -31,15 +31,27 @@ async fn main() -> ExitCode {
     let connection_string = match env::var("KITTY_MEDIA_DATABASE_URL") {
         Ok(url) => url,
         Err(e) => {
-            tracing::error!("Failed to read KITTY_MEDIA_DATABASE_URL: {}", e);
+            tracing::error!("Failed to read KITTY_MEDIA_DATABASE_URL: {e}");
             return ExitCode::from(EXIT_CODE_CONFIG_ERROR);
         }
     };
 
-    let _ = match TaskQueueDatabase::new(&connection_string).await {
+    let machine_id = match env::var("KITTY_MEDIA_MACHINE_ID").map(|v| v.parse::<u16>()) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            tracing::error!("Failed to parse KITTY_MEDIA_MACHINE_ID: {e}");
+            return ExitCode::from(EXIT_CODE_CONFIG_ERROR);
+        }
+        Err(_) => {
+            tracing::warn!("KITTY_MEDIA_MACHINE_ID not provided, defaulting to 0");
+            0
+        }
+    };
+
+    let _ = match TaskQueueDatabase::new(&connection_string, machine_id).await {
         Ok(db) => db,
         Err(e) => {
-            tracing::error!("Failed to connect to task queue database: {}", e);
+            tracing::error!("Failed to initialize task queue database: {e}");
             return ExitCode::from(EXIT_CODE_DATABASE_ERROR);
         }
     };
